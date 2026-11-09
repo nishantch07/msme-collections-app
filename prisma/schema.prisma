@@ -1,0 +1,76 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id               String       @id @default(cuid())
+  name             String
+  email            String       @unique
+  password_hash    String
+  role             String       // "OFFICER" | "MANAGER"
+  assigned_pincode String       // e.g. "560058" or "ALL"
+  created_at       DateTime     @default(now())
+  updated_at       DateTime     @updatedAt
+  loans            Loan[]       @relation("AssignedOfficerLoans")
+  outcome_logs     OutcomeLog[]
+}
+
+model Loan {
+  id                     String         @id @default(cuid())
+  account_number         String         @unique
+  borrower_name          String
+  owner_name             String
+  phone                  String
+  business_type          String
+  outstanding_paise      Int
+  emi_amount_paise       Int
+  dpd                    Int
+  pincode                String
+  gps_lat                Float
+  gps_lng                Float
+  priority_score         Float
+  priority_breakdown     String         // JSON string: array of badges/reasons
+  ai_confidence          String         // "HIGH" | "LOW_CONFIDENCE" | "DISPUTE_HOLD"
+  ai_uncertainty_reason  String?
+  manual_override_score  Float?
+  manual_override_reason String?
+  assigned_officer_id    String?
+  assigned_officer       User?          @relation("AssignedOfficerLoans", fields: [assigned_officer_id], references: [id])
+  created_at             DateTime       @default(now())
+  updated_at             DateTime       @updatedAt
+  outcome_logs           OutcomeLog[]
+  promises_to_pay        PromiseToPay[]
+}
+
+model OutcomeLog {
+  id                     String   @id @default(cuid())
+  idempotency_key        String   @unique
+  loan_id                String
+  loan                   Loan     @relation(fields: [loan_id], references: [id], onDelete: Cascade)
+  officer_id             String
+  officer                User     @relation(fields: [officer_id], references: [id])
+  outcome_type           String   // "PAID" | "PTP" | "UNREACHABLE" | "DISPUTE" | "REFUSED"
+  amount_collected_paise Int?
+  notes                  String
+  gps_lat                Float
+  gps_lng                Float
+  gps_accuracy_m         Float
+  captured_at_device     DateTime
+  synced_at_server       DateTime @default(now())
+}
+
+model PromiseToPay {
+  id                    String   @id @default(cuid())
+  loan_id               String
+  loan                  Loan     @relation(fields: [loan_id], references: [id], onDelete: Cascade)
+  promised_amount_paise Int
+  promise_date          DateTime
+  status                String   // "ACTIVE" | "BROKEN" | "FULFILLED"
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+}
