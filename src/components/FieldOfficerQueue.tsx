@@ -10,10 +10,13 @@ import {
   AlertTriangle,
   History,
   FileCheck2,
+  MapPin,
 } from 'lucide-react';
 import { LoanRecord, VisitDrawer } from './VisitDrawer';
 import { AiReminderModal } from './AiReminderModal';
-import { OverrideModal } from './OverrideModal';
+import { queueOfflineContactAttempt } from '@/lib/offline-db';
+import { checkRbiCompliance } from '@/lib/compliance';
+import { getIstStartOfToday } from '@/lib/date';
 
 interface FieldOfficerQueueProps {
   loans: LoanRecord[];
@@ -23,7 +26,15 @@ interface FieldOfficerQueueProps {
   onRefreshLoans: () => void;
   onUpdateLoanLocally: (loan: LoanRecord) => void;
   onQueueOfflineOutcome: (offlineItem: { outcome_type: string; loan_id: string; amount_collected_paise?: number | null }) => void;
+  onContactAttemptQueued: () => void;
   officerName: string;
+  assignedPincode: string;
+  hasMoreLoans: boolean;
+  isLoadingMoreLoans: boolean;
+  totalLoanCount: number;
+  totalExposurePaise: number;
+  uncertainLoanCount: number;
+  onLoadMoreLoans: () => void;
 }
 
 export function FieldOfficerQueue({
@@ -33,9 +44,18 @@ export function FieldOfficerQueue({
   language,
   onUpdateLoanLocally,
   onQueueOfflineOutcome,
+  onContactAttemptQueued,
   officerName,
+  assignedPincode,
+  hasMoreLoans,
+  isLoadingMoreLoans,
+  totalLoanCount,
+  totalExposurePaise,
+  uncertainLoanCount,
+  onLoadMoreLoans,
 }: FieldOfficerQueueProps) {
-  const [selectedPincode, setSelectedPincode] = useState<string>('560058'); // Default to Peenya beat
+  const isProduction = process.env.NODE_ENV === 'production';
+  const [selectedPincode, setSelectedPincode] = useState<string>(assignedPincode === 'ALL' ? 'ALL' : assignedPincode);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'ALL' | 'UNSURE' | 'HIGH_PRIORITY' | 'TODAY_ACTIONED'>('ALL');
   const [expandedLoanId, setExpandedLoanId] = useState<string | null>(null);
@@ -43,9 +63,10 @@ export function FieldOfficerQueue({
   // Modals state
   const [activeVisitLoan, setActiveVisitLoan] = useState<LoanRecord | null>(null);
   const [activeReminderLoan, setActiveReminderLoan] = useState<LoanRecord | null>(null);
-  const [activeOverrideLoan, setActiveOverrideLoan] = useState<LoanRecord | null>(null);
 
-  const isNightLocked = simulatedHour !== null && (simulatedHour >= 19 || simulatedHour < 8);
+  const isNightLocked = simulatedHour === null
+    ? !checkRbiCompliance().isAllowed
+    : simulatedHour >= 19 || simulatedHour < 8;
 
   // Filtered loans list
   const filteredLoans = useMemo(() => {
@@ -80,22 +101,102 @@ export function FieldOfficerQueue({
   }, [loans, selectedPincode, activeTab, searchQuery]);
 
   // Statistics for Beat
-  const beatStats = useMemo(() => {
-    const totalExposure = loans.reduce((acc, l) => acc + l.outstanding_paise, 0);
-    const unsureCount = loans.filter((l) => l.ai_confidence !== 'HIGH').length;
-    return {
-      count: loans.length,
-      totalExposureRupees: Math.round(totalExposure / 100),
-      unsureCount,
-    };
-  }, [loans]);
+  const beatStats = {
+    count: totalLoanCount,
+    totalExposureRupees: Math.round(totalExposurePaise / 100),
+    unsureCount: uncertainLoanCount,
+  };
+  const availablePincodes = loans.reduce<string[]>((values, loan) => {
+    if (!values.includes(loan.pincode)) values.push(loan.pincode);
+    return values;
+  }, []);
 
-  const handleCallBorrower = (phone: string, borrowerName: string) => {
-    if (isNightLocked) {
-      alert(`⚠️ RBI Contact Lockout Active: Outbound calls to ${borrowerName} are legally restricted between 19:00 and 08:00 IST.`);
+  const handleCallBorrower = async (loan: LoanRecord) => {
+    const idempotencyKey = `contact-${loan.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (!isOnline) {
+      const compliance = checkRbiCompliance(
+        simulatedHour === null ? undefined : { simulatedHour }
+      );
+      try {
+        await queueOfflineContactAttempt({
+          idempotency_key: idempotencyKey,
+          loan_id: loan.id,
+          channel: 'CALL',
+          attempted_at_device: new Date().toISOString(),
+          ist_time: compliance.currentTimeString,
+          status: compliance.isAllowed && !isProduction ? 'INITIATED' : 'BLOCKED',
+          details: isProduction
+            ? 'Call blocked because server time cannot be verified while offline.'
+            : compliance.isAllowed ? undefined : compliance.reason,
+        });
+        onContactAttemptQueued();
+      } catch (error) {
+        alert(error instanceof Error ? error.message : 'Unable to save the contact attempt offline.');
+        return;
+      }
+      if (isProduction) {
+        alert('Calls are blocked while offline because the app cannot verify the server-controlled RBI contact window. The blocked attempt was saved for sync.');
+        return;
+      }
+      if (!compliance.isAllowed) {
+        alert(`RBI contact window: this blocked call attempt was recorded (${compliance.currentTimeString}).`);
+        return;
+      }
+      window.location.href = `tel:${loan.phone}`;
       return;
     }
-    window.location.href = `tel:${phone}`;
+
+    try {
+      const response = await fetch('/api/contact-attempts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idempotency_key: idempotencyKey,
+          loan_id: loan.id,
+          channel: 'CALL',
+          ...(simulatedHour === null ? {} : { simulated_hour: simulatedHour }),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        alert(result.message || 'Contact blocked. The attempt was recorded.');
+        return;
+      }
+      window.location.href = `tel:${loan.phone}`;
+    } catch (error) {
+      if (error instanceof TypeError) {
+        const compliance = checkRbiCompliance(
+          simulatedHour === null ? undefined : { simulatedHour }
+        );
+        try {
+          await queueOfflineContactAttempt({
+            idempotency_key: idempotencyKey,
+            loan_id: loan.id,
+            channel: 'CALL',
+            attempted_at_device: new Date().toISOString(),
+            ist_time: compliance.currentTimeString,
+            status: compliance.isAllowed && !isProduction ? 'INITIATED' : 'BLOCKED',
+            details: isProduction
+              ? 'Call blocked because server time cannot be verified while offline.'
+              : compliance.isAllowed ? undefined : compliance.reason,
+          });
+          onContactAttemptQueued();
+          if (isProduction) {
+            alert('Calls are blocked while offline because the app cannot verify the server-controlled RBI contact window. The blocked attempt was saved for sync.');
+            return;
+          }
+          if (compliance.isAllowed) {
+            window.location.href = `tel:${loan.phone}`;
+            return;
+          }
+          alert(`RBI contact window: this blocked call attempt was recorded (${compliance.currentTimeString}).`);
+        } catch (storageError) {
+          alert(storageError instanceof Error ? storageError.message : 'Unable to save the contact attempt offline.');
+        }
+        return;
+      }
+      alert(error instanceof Error ? error.message : 'Unable to record the call attempt.');
+    }
   };
 
   const getScoreBadgeColor = (score: number) => {
@@ -148,9 +249,7 @@ export function FieldOfficerQueue({
         <div className="mt-4 pt-3 border-t border-slate-800 flex flex-wrap items-center gap-2">
           <span className="text-xs text-slate-400 font-medium">Beat Area:</span>
           {[
-            { id: '560058', label: '560058 Peenya Industrial' },
-            { id: '560022', label: '560022 Yeshwanthpur' },
-            { id: '560053', label: '560053 Chickpet Wholesalers' },
+            ...availablePincodes.map((pincode) => ({ id: pincode, label: pincode })),
             { id: 'ALL', label: 'All Pincodes (Portfolio)' },
           ].map((pin) => (
             <button
@@ -222,7 +321,9 @@ export function FieldOfficerQueue({
           </div>
           <h3 className="font-bold text-slate-800 text-base">No matching loan accounts found</h3>
           <p className="text-xs text-slate-500 max-w-sm mx-auto">
-            Try adjusting your search keywords or switch the active pincode beat filter above.
+            {hasMoreLoans
+              ? `Search covers the ${loans.length} loaded accounts. Load more below to search the rest of your beat.`
+              : 'Try adjusting your search keywords or switch the active pincode beat filter above.'}
           </p>
           <button
             onClick={() => {
@@ -252,6 +353,12 @@ export function FieldOfficerQueue({
           }
 
           const hasUncertainty = loan.ai_confidence !== 'HIGH';
+          const nextPromise = loan.promises_to_pay
+            ?.filter((promise) => promise.status === 'ACTIVE')
+            .sort((left, right) => new Date(left.promise_date).getTime() - new Date(right.promise_date).getTime())[0];
+          const promiseNeedsFollowUp = nextPromise
+            ? new Date(nextPromise.promise_date).getTime() < getIstStartOfToday().getTime()
+            : false;
 
           return (
             <div
@@ -337,6 +444,17 @@ export function FieldOfficerQueue({
                   ))}
                 </div>
 
+                {nextPromise && (
+                  <div className={`rounded-lg border px-3 py-2 text-xs ${promiseNeedsFollowUp ? 'border-amber-300 bg-amber-50 text-amber-950' : 'border-blue-200 bg-blue-50 text-blue-900'}`}>
+                    <strong>
+                      {language === 'hi'
+                        ? promiseNeedsFollowUp ? 'भुगतान वादे पर अनुवर्ती:' : 'भुगतान वादा अनुस्मारक:'
+                        : promiseNeedsFollowUp ? 'Overdue promise — follow up:' : 'Promise reminder:'}
+                    </strong>{' '}
+                    ₹{(nextPromise.promised_amount_paise / 100).toLocaleString('en-IN')} · {new Date(nextPromise.promise_date).toLocaleDateString()}
+                  </div>
+                )}
+
                 {/* AI Uncertainty / Dispute Hold Banner */}
                 {hasUncertainty && (
                   <div className="p-3 bg-amber-50/90 border border-amber-300 rounded-xl space-y-2">
@@ -355,13 +473,6 @@ export function FieldOfficerQueue({
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => setActiveOverrideLoan(loan)}
-                        className="touch-target px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold rounded-lg shrink-0 shadow-sm transition"
-                      >
-                        Override AI
-                      </button>
                     </div>
 
                     {loan.manual_override_reason && (
@@ -402,16 +513,31 @@ export function FieldOfficerQueue({
                   {/* Call Borrower */}
                   <button
                     type="button"
-                    onClick={() => handleCallBorrower(loan.phone, loan.borrower_name)}
+                    onClick={() => handleCallBorrower(loan)}
+                    disabled={!loan.phone.trim()}
                     className={`touch-target p-2.5 rounded-xl border transition ${
                       isNightLocked
                         ? 'bg-slate-100 border-slate-300 text-slate-400 cursor-not-allowed'
                         : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-800'
                     }`}
-                    title={isNightLocked ? 'RBI Lockout Active (Calls restricted)' : `Call ${loan.phone}`}
+                    title={!loan.phone.trim() ? 'No borrower phone number is available' : isNightLocked ? 'RBI Lockout Active (Calls restricted)' : `Call ${loan.phone}`}
                   >
                     <Phone className="w-4 h-4 text-blue-600" />
                   </button>
+                  <a
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+                      loan.gps_lat !== null && loan.gps_lng !== null
+                        ? `${loan.gps_lat},${loan.gps_lng}`
+                        : loan.pincode
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="touch-target p-2.5 rounded-xl border border-slate-300 bg-white text-slate-800 hover:bg-slate-100 transition"
+                    title={loan.gps_lat !== null && loan.gps_lng !== null ? 'Open directions to the borrower' : 'Find this pincode in maps; borrower coordinates are not available'}
+                    aria-label={`Directions to ${loan.borrower_name}, ${loan.pincode}`}
+                  >
+                    <MapPin className="w-4 h-4 text-rose-600" />
+                  </a>
                 </div>
 
                 {/* Expand / Collapse Details */}
@@ -448,7 +574,9 @@ export function FieldOfficerQueue({
                       <div className="flex justify-between text-slate-600">
                         <span>GPS Coordinates:</span>
                         <span className="font-mono text-slate-800">
-                          {loan.gps_lat.toFixed(4)}&deg; N, {loan.gps_lng.toFixed(4)}&deg; E
+                          {loan.gps_lat !== null && loan.gps_lng !== null
+                            ? `${loan.gps_lat.toFixed(4)}, ${loan.gps_lng.toFixed(4)}`
+                            : `Not available · ${loan.pincode}`}
                         </span>
                       </div>
                     </div>
@@ -460,6 +588,22 @@ export function FieldOfficerQueue({
           );
         })}
       </div>
+
+      {hasMoreLoans && (
+        <div className="flex flex-col items-center gap-2 rounded-xl border border-slate-200 bg-white p-4 text-center">
+          <p className="text-xs text-slate-500">
+            Showing {loans.length} of {totalLoanCount} assigned accounts
+          </p>
+          <button
+            type="button"
+            onClick={onLoadMoreLoans}
+            disabled={isLoadingMoreLoans}
+            className="touch-target rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+          >
+            {isLoadingMoreLoans ? 'Loading…' : 'Load next 100 accounts'}
+          </button>
+        </div>
+      )}
 
       {/* Modals */}
       <VisitDrawer
@@ -482,15 +626,8 @@ export function FieldOfficerQueue({
         onClose={() => setActiveReminderLoan(null)}
         officerName={officerName}
         simulatedHour={simulatedHour}
-      />
-
-      <OverrideModal
-        loan={activeOverrideLoan}
-        onClose={() => setActiveOverrideLoan(null)}
-        userRole="OFFICER"
-        onOverrideSaved={(updatedLoan) => {
-          onUpdateLoanLocally(updatedLoan);
-        }}
+        isOnline={isOnline}
+        onContactAttemptQueued={onContactAttemptQueued}
       />
 
     </div>

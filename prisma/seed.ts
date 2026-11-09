@@ -1,14 +1,21 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { calculatePriorityScore } from '../src/lib/priority-engine';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('The destructive demo seed is disabled in production.');
+  }
   console.log('🌱 Starting database seed...');
 
   // Clean existing tables (in reverse foreign key order)
   await prisma.outcomeLog.deleteMany({});
+  await prisma.contactAttempt.deleteMany({});
+  await prisma.loanScoreSnapshot.deleteMany({});
   await prisma.promiseToPay.deleteMany({});
+  await prisma.importBatch.deleteMany({});
   await prisma.loan.deleteMany({});
   await prisma.user.deleteMany({});
 
@@ -36,7 +43,37 @@ async function main() {
     },
   });
 
-  console.log(`✅ Seeded users: Officer (${officer.email}), Manager (${manager.email})`);
+  const indoreOfficers = await Promise.all([
+    prisma.user.create({
+      data: {
+        name: 'Rahul Chouhan',
+        email: 'rahul@msmelender.in',
+        password_hash: officerHash,
+        role: 'OFFICER',
+        assigned_pincode: '452001',
+      },
+    }),
+    prisma.user.create({
+      data: {
+        name: 'Neha Solanki',
+        email: 'neha@msmelender.in',
+        password_hash: officerHash,
+        role: 'OFFICER',
+        assigned_pincode: '452001',
+      },
+    }),
+    prisma.user.create({
+      data: {
+        name: 'Imran Qureshi',
+        email: 'imran@msmelender.in',
+        password_hash: officerHash,
+        role: 'OFFICER',
+        assigned_pincode: '452001',
+      },
+    }),
+  ]);
+
+  console.log(`✅ Seeded users: Officer (${officer.email}), Manager (${manager.email}), 3 Indore officers.`);
 
   // 2. Define 18 Realistic Bengaluru MSME Borrowers
   const loansData = [
@@ -443,14 +480,94 @@ async function main() {
     },
   ];
 
+  loansData.push(
+    {
+      account_number: 'LN-10293',
+      borrower_name: 'Company B (packaging unit)',
+      owner_name: 'Company B',
+      phone: '',
+      business_type: 'Packaging',
+      outstanding_paise: 64000000,
+      emi_amount_paise: 6400000,
+      dpd: 12,
+      pincode: '452001',
+      gps_lat: 22.7196,
+      gps_lng: 75.8577,
+      priority_score: 0,
+      priority_breakdown: '[]',
+      ai_confidence: 'HIGH',
+      ai_uncertainty_reason: null,
+      assigned_officer_id: indoreOfficers[0].id,
+    },
+    {
+      account_number: 'LN-10871',
+      borrower_name: 'Company C (fertiliser shop)',
+      owner_name: 'Company C',
+      phone: '',
+      business_type: 'Fertiliser trading',
+      outstanding_paise: 31000000,
+      emi_amount_paise: 3100000,
+      dpd: 27,
+      pincode: '452001',
+      gps_lat: 22.7196,
+      gps_lng: 75.8577,
+      priority_score: 0,
+      priority_breakdown: '[]',
+      ai_confidence: 'HIGH',
+      ai_uncertainty_reason: null,
+      assigned_officer_id: indoreOfficers[1].id,
+    },
+    {
+      account_number: 'LN-11930',
+      borrower_name: 'Company D (printing press)',
+      owner_name: 'Company D',
+      phone: '',
+      business_type: 'Printing',
+      outstanding_paise: 22000000,
+      emi_amount_paise: 2200000,
+      dpd: 19,
+      pincode: '452001',
+      gps_lat: 22.7196,
+      gps_lng: 75.8577,
+      priority_score: 0,
+      priority_breakdown: '[]',
+      ai_confidence: 'HIGH',
+      ai_uncertainty_reason: null,
+      assigned_officer_id: indoreOfficers[2].id,
+    },
+  );
+
   const createdLoans = [];
   for (const loanData of loansData) {
+    const samplePromiseDate = loanData.account_number === 'LN-10293'
+      ? new Date('2026-11-05T00:00:00.000Z')
+      : loanData.account_number === 'LN-11930'
+        ? new Date('2026-10-31T00:00:00.000Z')
+        : null;
+    const score = loanData.account_number.startsWith('LN-')
+      ? calculatePriorityScore({
+          dpd: loanData.dpd,
+          outstanding_paise: loanData.outstanding_paise,
+          emi_amount_paise: loanData.emi_amount_paise,
+          promises: samplePromiseDate
+            ? [{ status: 'BROKEN', promise_date: samplePromiseDate }]
+            : [],
+        })
+      : null;
     const loan = await prisma.loan.create({
-      data: loanData,
+      data: score
+        ? {
+            ...loanData,
+            priority_score: score.priorityScore,
+            priority_breakdown: JSON.stringify(score.topBadges),
+            ai_confidence: score.aiConfidence,
+            ai_uncertainty_reason: score.aiUncertaintyReason,
+          }
+        : loanData,
     });
     createdLoans.push(loan);
   }
-  console.log(`✅ Seeded ${createdLoans.length} Bengaluru MSME loans across 3 pin codes.`);
+  console.log(`✅ Seeded ${createdLoans.length} demo MSME loans across Bengaluru and Indore.`);
 
   // 3. Seed Historical PromiseToPay and OutcomeLogs
   // Borrowers with broken promises:
@@ -504,6 +621,18 @@ async function main() {
         promised_amount_paise: 4000000,
         promise_date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
         status: 'ACTIVE',
+      },
+      {
+        loan_id: createdLoans.find((loan) => loan.account_number === 'LN-10293')!.id,
+        promised_amount_paise: 6400000,
+        promise_date: new Date('2026-11-05T00:00:00.000Z'),
+        status: 'BROKEN',
+      },
+      {
+        loan_id: createdLoans.find((loan) => loan.account_number === 'LN-11930')!.id,
+        promised_amount_paise: 2200000,
+        promise_date: new Date('2026-10-31T00:00:00.000Z'),
+        status: 'BROKEN',
       },
     ],
   });

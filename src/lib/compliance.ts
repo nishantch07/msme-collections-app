@@ -7,6 +7,10 @@ export interface RbiComplianceResult {
   reason?: string;
 }
 
+export function isComplianceClockSimulationEnabled(): boolean {
+  return process.env.NODE_ENV !== 'production';
+}
+
 /**
  * Checks compliance with RBI Fair Practices Code for Field Collections:
  * Outbound borrower communication & field visits are strictly prohibited
@@ -22,11 +26,18 @@ export function checkRbiCompliance(options?: {
   let istHour: number;
   let istMinute: number;
 
-  if (options?.simulatedHour !== undefined && options?.simulatedHour !== null && !isNaN(options.simulatedHour)) {
+  if (
+    options?.simulatedHour !== undefined
+    && options.simulatedHour !== null
+    && Number.isFinite(options.simulatedHour)
+    && options.simulatedHour >= 0
+    && options.simulatedHour < 24
+  ) {
     istHour = Math.floor(options.simulatedHour);
-    istMinute = options.simulatedMinute !== undefined && options.simulatedMinute !== null && !isNaN(options.simulatedMinute)
+    istMinute = options.simulatedMinute !== undefined && options.simulatedMinute !== null && Number.isFinite(options.simulatedMinute)
       ? Math.floor(options.simulatedMinute)
-      : 0;
+      : Math.round((options.simulatedHour - istHour) * 60);
+    if (istMinute < 0 || istMinute > 59) istMinute = 0;
   } else {
     const d = options?.date ?? new Date();
     // Convert to IST (UTC + 5:30)
@@ -36,13 +47,12 @@ export function checkRbiCompliance(options?: {
     istMinute = istTime.getMinutes();
   }
 
-  // Permitted window: 08:00 <= time <= 19:00
-  // e.g. 08:00 is allowed, 18:59 is allowed, 19:00 sharp is allowed, 19:01 is locked, 07:59 is locked.
+  // The contact window includes 08:00 and ends immediately before 19:00.
   const totalMinutes = istHour * 60 + istMinute;
   const startMinutes = 8 * 60;   // 08:00
   const endMinutes = 19 * 60;    // 19:00
 
-  const isAllowed = totalMinutes >= startMinutes && totalMinutes <= endMinutes;
+  const isAllowed = totalMinutes >= startMinutes && totalMinutes < endMinutes;
 
   const pad = (n: number) => n.toString().padStart(2, '0');
   const currentTimeString = `${pad(istHour)}:${pad(istMinute)} IST`;

@@ -15,6 +15,7 @@ import {
 
 export default function LoginPage() {
   const router = useRouter();
+  const isDemoMode = process.env.NODE_ENV !== 'production';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -36,8 +37,11 @@ export default function LoginPage() {
         throw new Error(data.error || 'Authentication failed');
       }
 
-      // Store basic session user info in localStorage for instant client boot
-      localStorage.setItem('msme_user', JSON.stringify(data.user));
+      if (isDemoMode) {
+        localStorage.setItem('msme_user', JSON.stringify(data.user));
+      } else {
+        localStorage.removeItem('msme_user');
+      }
 
       router.push('/');
       router.refresh();
@@ -71,63 +75,65 @@ export default function LoginPage() {
             MSME Field Collections
           </h1>
           <p className="text-xs text-slate-400 font-medium">
-            AI-Prioritised Delinquency Recovery &bull; RBI Fair Practices Compliant
+            AI-prioritised collections &bull; Built with borrower-safe contact controls
           </p>
         </div>
 
-        {/* 1-Click Reviewer Quick Access Cards */}
-        <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 shadow-xl space-y-3">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400 uppercase tracking-wider">
-            <Sparkles className="w-4 h-4 text-amber-400" />
-            <span>Evaluator 1-Click Fast Logins</span>
-          </div>
+        {isDemoMode && (
+          <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 shadow-xl space-y-3">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400 uppercase tracking-wider">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <span>Evaluator 1-Click Fast Logins</span>
+            </div>
 
-          <div className="grid grid-cols-1 gap-2.5">
-            {/* Card 1: Field Officer */}
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={() => performLogin('officer@msmelender.in', 'Officer@123')}
-              className="touch-target p-3 rounded-xl bg-slate-900/90 hover:bg-slate-900 border border-blue-500/40 hover:border-blue-500 text-left transition flex items-center justify-between group shadow-sm"
-            >
-              <div>
-                <div className="flex items-center gap-1.5 font-bold text-white text-sm">
-                  <UserCheck className="w-4 h-4 text-blue-400" />
-                  <span>Ramesh Kumar</span>
-                  <span className="text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full border border-blue-500/40">
-                    Field Officer
-                  </span>
+            <div className="grid grid-cols-1 gap-2.5">
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => performLogin('officer@msmelender.in', 'Officer@123')}
+                className="touch-target p-3 rounded-xl bg-slate-900/90 hover:bg-slate-900 border border-blue-500/40 hover:border-blue-500 text-left transition flex items-center justify-between group shadow-sm"
+              >
+                <div>
+                  <div className="flex items-center gap-1.5 font-bold text-white text-sm">
+                    <UserCheck className="w-4 h-4 text-blue-400" />
+                    <span>Ramesh Kumar</span>
+                    <span className="text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full border border-blue-500/40">
+                      Field Officer
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Peenya Beat (560058) &bull; 3-Tap Logging &bull; GPS
+                  </p>
                 </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Peenya Beat (560058) &bull; 3-Tap Logging &bull; WhatsApp AI
-                </p>
-              </div>
-              <ArrowRight className="w-4 h-4 text-blue-400 group-hover:translate-x-1 transition" />
-            </button>
+                <ArrowRight className="w-4 h-4 text-blue-400 group-hover:translate-x-1 transition" />
+              </button>
 
-            {/* Card 2: Manager */}
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={() => performLogin('manager@msmelender.in', 'Manager@123')}
-              className="touch-target p-3 rounded-xl bg-slate-900/90 hover:bg-slate-900 border border-indigo-500/40 hover:border-indigo-500 text-left transition flex items-center justify-between group shadow-sm"
-            >
-              <div>
-                <div className="flex items-center gap-1.5 font-bold text-white text-sm">
-                  <ShieldCheck className="w-4 h-4 text-indigo-400" />
-                  <span>Priya Nair</span>
-                  <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-500/40">
-                    Collections Manager
-                  </span>
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={() => performLogin('manager@msmelender.in', 'Manager@123')}
+                className="touch-target p-3 rounded-xl bg-slate-900/90 hover:bg-slate-900 border border-indigo-500/40 hover:border-indigo-500 text-left transition flex items-center justify-between group shadow-sm"
+              >
+                <div>
+                  <div className="flex items-center gap-1.5 font-bold text-white text-sm">
+                    <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                    <span>Priya Nair</span>
+                    <span className="text-[10px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-500/40">
+                      Collections Manager
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Portfolio Head &bull; Dispute Escalation Queue &bull; Audit Trail
+                  </p>
                 </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Portfolio Head &bull; Dispute Escalation Queue &bull; Audit Trail
-                </p>
-              </div>
-              <ArrowRight className="w-4 h-4 text-indigo-400 group-hover:translate-x-1 transition" />
-            </button>
+                <ArrowRight className="w-4 h-4 text-indigo-400 group-hover:translate-x-1 transition" />
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Indore team demo logins: neha@msmelender.in and imran@msmelender.in · password Officer@123
+            </p>
           </div>
-        </div>
+        )}
 
         {/* Standard Manual Login Form */}
         <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-5 shadow-xl space-y-4">
@@ -186,9 +192,11 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="pt-2 text-center text-[11px] text-slate-500">
-            Author: <strong className="text-slate-400">Nishant Chhetri</strong> &bull; Isocode Take-Home Assessment
-          </div>
+          {isDemoMode && (
+            <div className="pt-2 text-center text-[11px] text-slate-500">
+              Demo environment &bull; Do not enter real borrower information
+            </div>
+          )}
         </div>
 
       </div>

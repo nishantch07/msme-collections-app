@@ -12,6 +12,8 @@ export interface ReminderInput {
   outstandingPaise: number;
   emiAmountPaise: number;
   officerName?: string;
+  promiseDate?: string;
+  promisedAmountPaise?: number;
   language?: 'en' | 'hi';
   customDraft?: string;
 }
@@ -74,17 +76,18 @@ export function validateCommunicationGuardrails(
   // Regex to extract INR currency figures: e.g. ₹ 42,000, Rs. 42000, INR 4,85,000
   const currencyRegex = /(?:₹|Rs\.?|INR)\s*([\d,]+)/gi;
   let match: RegExpExecArray | null;
+  currencyRegex.lastIndex = 0;
 
-  while ((match = currencyRegex.exec(draft)) !== null) {
+  while ((match = currencyRegex.exec(sanitizedDraft)) !== null) {
     const rawNumberStr = match[1].replace(/,/g, '');
-    const parsedAmount = parseInt(rawNumberStr, 10);
+    const parsedAmount = Number.parseInt(rawNumberStr, 10);
 
-    if (!isNaN(parsedAmount) && parsedAmount > 0) {
+    if (!Number.isNaN(parsedAmount) && parsedAmount > 0) {
       if (!validRupees.has(parsedAmount)) {
         violations.push(
           `Hallucinated loan amount: quoted ₹${parsedAmount.toLocaleString('en-IN')} does not match borrower EMI (₹${(emiAmountPaise / 100).toLocaleString('en-IN')}) or total exposure (₹${(outstandingPaise / 100).toLocaleString('en-IN')}).`
         );
-        // Sanitize: substitute true EMI amount
+        // Sanitize: substitute the actual validated EMI amount to keep the message compliant.
         const correctEmiStr = `₹${(emiAmountPaise / 100).toLocaleString('en-IN')}`;
         sanitizedDraft = sanitizedDraft.replace(match[0], correctEmiStr);
       }
@@ -100,7 +103,7 @@ export function validateCommunicationGuardrails(
 }
 
 /**
- * Deterministic DLT-Registered Compliant Reminder Templates
+ * Deterministic reminder templates approved for this prototype.
  */
 export function getDltTemplateReminder(
   input: ReminderInput,
@@ -108,23 +111,35 @@ export function getDltTemplateReminder(
 ): string {
   const emiRupees = (input.emiAmountPaise / 100).toLocaleString('en-IN');
   const officerStr = input.officerName || 'your field relationship officer';
+  const promiseDate = input.promiseDate ? new Date(input.promiseDate).toLocaleDateString(lang === 'hi' ? 'hi-IN' : 'en-IN') : '';
+  const promisedRupees = input.promisedAmountPaise
+    ? (input.promisedAmountPaise / 100).toLocaleString('en-IN')
+    : '';
 
   if (lang === 'hi') {
-    return `नमस्ते ${input.ownerName || input.borrowerName} जी, आपके एमएसएमई ऋण खाता ${input.accountNumber} की बकाया ईएमआई ₹${emiRupees} देय है। कृपया इसे आज ही जमा करने की कृपा करें या अपने फील्ड अधिकारी ${officerStr} से संपर्क करें। आपका सहयोग हमारे लिए महत्वपूर्ण है।`;
+    const promiseReminder = promiseDate
+      ? ` आपने ₹${promisedRupees} के भुगतान की तारीख ${promiseDate} बताई थी। कृपया भुगतान की स्थिति बताएं या सहायता के लिए संपर्क करें।`
+      : '';
+    return `नमस्ते ${input.ownerName || input.borrowerName} जी, आपके एमएसएमई ऋण खाता ${input.accountNumber} की बकाया ईएमआई ₹${emiRupees} है।${promiseReminder} कृपया अपने फील्ड अधिकारी ${officerStr} से संपर्क करें। धन्यवाद।`;
   }
 
-  return `Dear ${input.ownerName || input.borrowerName}, this is a polite reminder from your MSME lending partner regarding loan account ${input.accountNumber}. An overdue installment of ₹${emiRupees} is pending. Kindly clear this payment at your earliest convenience or speak to ${officerStr}. Thank you for your partnership.`;
+  const promiseReminder = promiseDate
+    ? ` You had shared ${promiseDate} as the payment date for ₹${promisedRupees}. Please update us on the payment or contact us if you need help.`
+    : '';
+  return `Dear ${input.ownerName || input.borrowerName}, this is a reminder from your MSME lending partner regarding loan account ${input.accountNumber}. An installment of ₹${emiRupees} is pending.${promiseReminder} Please speak to ${officerStr}. Thank you.`;
 }
 
 /**
  * Generate Bilingual AI Compliant Reminder
- * Tries Gemini API if configured, falls back to deterministic DLT templates.
+ * Uses Gemini only in non-production demo environments; production stays on
+ * the approved local template until a processor agreement is configured.
  * Always validates against the 2-layer safety guardrail.
  */
 export async function generateCompliantReminder(
   input: ReminderInput
 ): Promise<{
   draft: string;
+  approvedTemplateDraft: string;
   sanitizedDraft: string;
   language: 'en' | 'hi';
   safe: boolean;
@@ -139,7 +154,7 @@ export async function generateCompliantReminder(
 
   const apiKey = process.env.GEMINI_API_KEY?.trim();
 
-  if (apiKey) {
+  if (apiKey && process.env.NODE_ENV !== 'production') {
     try {
       const prompt = `You are a polite, RBI-compliant MSME collections officer in India. Write a brief ${
         lang === 'hi' ? 'Hindi' : 'English'
@@ -148,6 +163,7 @@ Borrower: ${input.borrowerName} (${input.ownerName})
 Loan Account: ${input.accountNumber}
 EMI Overdue: ₹${(input.emiAmountPaise / 100).toLocaleString('en-IN')}
 Total Outstanding: ₹${(input.outstandingPaise / 100).toLocaleString('en-IN')}
+${input.promiseDate ? `Recorded promise: ₹${((input.promisedAmountPaise || input.emiAmountPaise) / 100).toLocaleString('en-IN')} by ${input.promiseDate}` : ''}
 
 STRICT RULES:
 1. Be respectful and professional.
@@ -192,11 +208,13 @@ STRICT RULES:
   const check = validateCommunicationGuardrails(
     rawText,
     input.outstandingPaise,
-    input.emiAmountPaise
+    input.emiAmountPaise,
+    input.promisedAmountPaise
   );
 
   return {
     draft: rawText,
+    approvedTemplateDraft: getDltTemplateReminder(input, lang),
     sanitizedDraft: check.sanitizedDraft,
     language: lang,
     safe: check.safe,

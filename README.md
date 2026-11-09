@@ -1,36 +1,35 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MSME Field Collections
 
-## Getting Started
+A mobile-first collections workflow prototype for field officers and branch managers. It replaces spreadsheet/WhatsApp coordination with a prioritised work queue, offline visit logging, promise tracking, CSV refreshes, and portfolio reporting.
 
-First, run the development server:
+## What is included
 
-```bash
+- Officer queue with advisory priority scores and human-readable reasons.
+- CSV import, pincode/workload assignment, an operations-provided branch master, and import snapshots.
+- GPS-backed visit outcomes and an AES-GCM encrypted IndexedDB queue for weak-signal use.
+- Promise-to-pay tracking, contact-attempt audit records, and manager roll-rate views.
+- Hindi/English reminder previews; an officer must review and confirm any demo WhatsApp action manually. Production WhatsApp remains blocked until an approved DLT template and provider integration exist.
+- Contact controls that block the 08:00–19:00 IST window boundaries correctly; production uses server time.
+
+## Run locally
+
+Requirements: Node.js 20+ and npm.
+
+```powershell
+npm install
+npx prisma db push
+npx prisma db seed
+npm test
+npm run lint
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). Demo accounts and role/network/time simulators are available only in the development build. The seed command is destructive and refuses to run when `NODE_ENV=production`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The sample overdue file is [sample-data/overdue-indore.csv](./sample-data/overdue-indore.csv).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Safety and deployment status
 
-## Learn More
+This is an assessed prototype, **not approved for real borrower data or production recovery operations**. A separate Neon/PostgreSQL schema and initial migration, Render deployment commands, Upstash distributed rate limits, readiness checks, and encrypted offline queue are included. Live use still requires validated branch data, legally approved privacy/retention processes, provider-backed registered messaging, backup/restore drills, monitoring and incident response, and low-end device/lost-device validation. `/api/readiness` intentionally remains blocked until operational release gates are satisfied. See [deployment.md](./deployment.md) for setup and limitations.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Do not treat AI scores as decisions or sendable AI-generated content. Scores are advisory; contact requires an officer action.

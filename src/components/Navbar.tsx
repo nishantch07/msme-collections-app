@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { ShieldCheck, ShieldAlert, LogOut, MapPin, Building2, User } from 'lucide-react';
+import { checkRbiCompliance } from '@/lib/compliance';
 
 interface NavbarProps {
   userName: string;
@@ -20,7 +21,9 @@ export function Navbar({
   onLogout,
   language,
 }: NavbarProps) {
-  const isNightLocked = simulatedHour !== null && (simulatedHour >= 19 || simulatedHour < 8);
+  const isNightLocked = simulatedHour === null
+    ? !checkRbiCompliance().isAllowed
+    : simulatedHour >= 19 || simulatedHour < 8;
 
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-slate-200 shadow-sm">
@@ -37,14 +40,14 @@ export function Navbar({
                 {language === 'hi' ? 'एमएसएमई फील्ड वसूली' : 'MSME Collections'}
               </h1>
               <span className="text-[10px] font-semibold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">
-                Bengaluru Beat
+                FIELD COLLECTIONS
               </span>
             </div>
             <p className="text-xs text-slate-500 flex items-center gap-1">
               <MapPin className="w-3 h-3 text-slate-400" />
               <span>
                 {userRole === 'OFFICER'
-                  ? `Beat Pincode: ${assignedPincode} (Peenya)`
+                  ? `Beat Pincode: ${assignedPincode}`
                   : 'Portfolio Oversight: All Pincodes'}
               </span>
             </p>

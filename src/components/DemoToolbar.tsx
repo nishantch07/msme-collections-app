@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { Wifi, WifiOff, Sun, Moon, UserCheck, RefreshCw, Languages } from 'lucide-react';
+import { checkRbiCompliance } from '@/lib/compliance';
 
 interface DemoToolbarProps {
   currentRole: 'OFFICER' | 'MANAGER';
@@ -15,6 +16,7 @@ interface DemoToolbarProps {
   language: 'en' | 'hi';
   onToggleLanguage: () => void;
   isFlushing?: boolean;
+  isDemoMode: boolean;
 }
 
 export function DemoToolbar({
@@ -29,21 +31,30 @@ export function DemoToolbar({
   language,
   onToggleLanguage,
   isFlushing = false,
+  isDemoMode,
 }: DemoToolbarProps) {
-  const isNightLocked = simulatedHour !== null && (simulatedHour >= 19 || simulatedHour < 8);
+  const compliance = checkRbiCompliance(
+    simulatedHour === null ? undefined : { simulatedHour }
+  );
+  const isNightLocked = !compliance.isAllowed;
 
   return (
-    <aside aria-label="Reviewer Demo Control Bar" className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-4xl px-3 pointer-events-none">
+    <aside
+      aria-label={isDemoMode ? 'Reviewer demo controls' : 'App status and language controls'}
+      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-4xl px-3 pointer-events-none"
+    >
       <div className="bg-slate-900/95 text-white border border-slate-700 shadow-2xl backdrop-blur-md rounded-2xl p-2.5 flex flex-wrap items-center justify-between gap-2 pointer-events-auto text-xs sm:text-sm">
         
         {/* Left: Reviewer Label & Role Switcher */}
         <div className="flex items-center gap-1.5 sm:gap-2">
-          <span className="hidden md:inline-block font-bold text-amber-400 uppercase tracking-wider text-[11px] px-2 py-0.5 bg-amber-950/60 border border-amber-600/40 rounded">
-            Evaluator Toolbar
-          </span>
+          {isDemoMode && (
+            <span className="hidden md:inline-block font-bold text-amber-400 uppercase tracking-wider text-[11px] px-2 py-0.5 bg-amber-950/60 border border-amber-600/40 rounded">
+              Evaluator Toolbar
+            </span>
+          )}
 
           {/* Role Switcher */}
-          <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
+          {isDemoMode && <div className="flex items-center bg-slate-800 p-0.5 rounded-lg border border-slate-700">
             <button
               onClick={() => onRoleSwitch('OFFICER')}
               className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md font-medium transition ${
@@ -66,12 +77,12 @@ export function DemoToolbar({
               <UserCheck className="w-3.5 h-3.5" />
               <span>Manager</span>
             </button>
-          </div>
+          </div>}
         </div>
 
         {/* Center: Network Online/Offline Mode */}
         <div className="flex items-center gap-1.5 sm:gap-2">
-          <button
+          {isDemoMode ? <button
             onClick={onToggleOnline}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-medium border transition ${
               isOnline
@@ -87,7 +98,11 @@ export function DemoToolbar({
                 {pendingSyncCount}
               </span>
             )}
-          </button>
+          </button> : <span className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-medium border ${isOnline ? 'border-emerald-500/60 text-emerald-300' : 'border-amber-500/60 text-amber-300'}`}>
+            {isOnline ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+            {isOnline ? 'Online' : 'Offline · saved on device'}
+            {pendingSyncCount > 0 && <span className="bg-amber-500 text-slate-950 font-bold px-1.5 py-0.2 rounded-full text-[10px]">{pendingSyncCount}</span>}
+          </span>}
 
           {/* Flush Queue Button */}
           {pendingSyncCount > 0 && (
@@ -106,7 +121,7 @@ export function DemoToolbar({
         {/* Right: RBI Clock Simulator & Language */}
         <div className="flex items-center gap-1.5 sm:gap-2">
           {/* RBI Clock Switcher */}
-          <button
+          {isDemoMode ? <button
             onClick={onToggleRbiClock}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-medium border transition ${
               !isNightLocked
@@ -126,7 +141,10 @@ export function DemoToolbar({
                 <span>20:45 IST (RBI Locked)</span>
               </>
             )}
-          </button>
+          </button> : <span className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg font-medium border ${isNightLocked ? 'border-red-500/70 text-red-300' : 'border-slate-600 text-slate-200'}`}>
+            {isNightLocked ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5 text-amber-400" />}
+            {compliance.currentTimeString} · {isNightLocked ? 'Contact blocked' : 'Contact window open'}
+          </span>}
 
           {/* Language Toggle */}
           <button

@@ -14,12 +14,16 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { LoanRecord } from './VisitDrawer';
+import { queueOfflineContactAttempt } from '@/lib/offline-db';
+import { checkRbiCompliance } from '@/lib/compliance';
 
 interface AiReminderModalProps {
   loan: LoanRecord | null;
   onClose: () => void;
   officerName?: string;
   simulatedHour: number | null;
+  isOnline: boolean;
+  onContactAttemptQueued: () => void;
 }
 
 export function AiReminderModal({
@@ -27,9 +31,12 @@ export function AiReminderModal({
   onClose,
   officerName = 'Ramesh Kumar',
   simulatedHour,
+  isOnline,
+  onContactAttemptQueued,
 }: AiReminderModalProps) {
   const [language, setLanguage] = useState<'en' | 'hi'>('en');
   const [draft, setDraft] = useState<string>('');
+  const [approvedDraft, setApprovedDraft] = useState<string>('');
   const [sanitizedDraft, setSanitizedDraft] = useState<string>('');
   const [isSafe, setIsSafe] = useState<boolean>(true);
   const [violations, setViolations] = useState<string[]>([]);
@@ -40,11 +47,18 @@ export function AiReminderModal({
   // Guardrail Stress-Tester input
   const [customTestText, setCustomTestText] = useState<string>('');
   const [isTestingCustom, setIsTestingCustom] = useState<boolean>(false);
+  const [customTestResult, setCustomTestResult] = useState<{ safe: boolean; sanitizedDraft: string; violations: string[] } | null>(null);
+  const [contactError, setContactError] = useState<string | null>(null);
+  const [isOpeningWhatsApp, setIsOpeningWhatsApp] = useState(false);
+  const isProduction = process.env.NODE_ENV === 'production';
 
   // Fetch initial reminder
   const fetchReminder = useCallback(async (lang: 'en' | 'hi') => {
     if (!loan) return;
     setIsLoading(true);
+    const activePromise = loan.promises_to_pay
+      ?.filter((promise) => promise.status === 'ACTIVE')
+      .sort((left, right) => new Date(left.promise_date).getTime() - new Date(right.promise_date).getTime())[0];
     try {
       const res = await fetch('/api/ai/reminder', {
         method: 'POST',
@@ -53,6 +67,11 @@ export function AiReminderModal({
           ...(simulatedHour !== null ? { 'x-simulated-ist-hour': simulatedHour.toString() } : {}),
         },
         body: JSON.stringify({
+          loan_id: loan.id,
+          ...(activePromise ? {
+            promise_date: activePromise.promise_date,
+            promised_amount_paise: activePromise.promised_amount_paise,
+          } : {}),
           borrower_name: loan.borrower_name,
           owner_name: loan.owner_name,
           account_number: loan.account_number,
@@ -65,6 +84,7 @@ export function AiReminderModal({
 
       const data = await res.json();
       setDraft(data.draft || '');
+      setApprovedDraft(data.approvedTemplateDraft || data.sanitizedDraft || data.draft || '');
       setSanitizedDraft(data.sanitizedDraft || data.draft || '');
       setIsSafe(data.safe ?? true);
       setViolations(data.violations || []);
@@ -86,11 +106,19 @@ export function AiReminderModal({
   const testCustomGuardrail = async (textToTest: string) => {
     if (!loan) return;
     setIsTestingCustom(true);
+    const activePromise = loan.promises_to_pay
+      ?.filter((promise) => promise.status === 'ACTIVE')
+      .sort((left, right) => new Date(left.promise_date).getTime() - new Date(right.promise_date).getTime())[0];
     try {
       const res = await fetch('/api/ai/reminder', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          loan_id: loan.id,
+          ...(activePromise ? {
+            promise_date: activePromise.promise_date,
+            promised_amount_paise: activePromise.promised_amount_paise,
+          } : {}),
           borrower_name: loan.borrower_name,
           owner_name: loan.owner_name,
           account_number: loan.account_number,
@@ -102,11 +130,11 @@ export function AiReminderModal({
       });
 
       const data = await res.json();
-      setDraft(textToTest);
-      setSanitizedDraft(data.sanitizedDraft || textToTest);
-      setIsSafe(data.safe ?? false);
-      setViolations(data.violations || []);
-      setProvider('guardrail-stress-test');
+      setCustomTestResult({
+        safe: data.safe ?? false,
+        sanitizedDraft: data.sanitizedDraft || textToTest,
+        violations: data.violations || [],
+      });
     } catch (err) {
       console.error('Guardrail test error:', err);
     } finally {
@@ -115,16 +143,109 @@ export function AiReminderModal({
   };
 
   const handleCopy = () => {
-    const textToCopy = isSafe ? draft : sanitizedDraft;
-    navigator.clipboard.writeText(textToCopy);
+    navigator.clipboard.writeText(approvedDraft);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleOpenWhatsApp = async () => {
+    if (!loan || isOpeningWhatsApp) return;
+    setContactError(null);
+    if (!loan.phone.replace(/[^\d]/g, '')) {
+      setContactError(isProduction
+        ? 'No borrower phone is available. Production messaging is not configured.'
+        : 'No borrower phone is available. You can still copy the approved template.');
+      return;
+    }
+    setIsOpeningWhatsApp(true);
+    const idempotencyKey = `contact-${loan.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      if (!isOnline) {
+        const compliance = checkRbiCompliance(
+          simulatedHour === null ? undefined : { simulatedHour }
+        );
+        await queueOfflineContactAttempt({
+          idempotency_key: idempotencyKey,
+          loan_id: loan.id,
+          channel: 'WHATSAPP',
+          attempted_at_device: new Date().toISOString(),
+          ist_time: compliance.currentTimeString,
+          status: compliance.isAllowed && !isProduction ? 'INITIATED' : 'BLOCKED',
+          details: isProduction
+            ? 'Production messaging is disabled until an approved template and sending integration are configured.'
+            : compliance.isAllowed ? undefined : compliance.reason,
+        });
+        onContactAttemptQueued();
+        if (isProduction) {
+          setContactError('WhatsApp is disabled in production until the approved template and sending integration are configured. The blocked attempt was saved for sync.');
+          return;
+        }
+        if (!compliance.isAllowed) {
+          setContactError(`Blocked outside the RBI contact window (${compliance.currentTimeString}). The attempt was saved for sync.`);
+          return;
+        }
+      } else {
+        const response = await fetch('/api/contact-attempts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            idempotency_key: idempotencyKey,
+            loan_id: loan.id,
+            channel: 'WHATSAPP',
+            ...(simulatedHour === null ? {} : { simulated_hour: simulatedHour }),
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          setContactError(result.message || 'Contact blocked. The attempt was recorded.');
+          return;
+        }
+      }
+
+      window.location.href = whatsappUrl;
+    } catch (error) {
+      if (error instanceof TypeError) {
+        const compliance = checkRbiCompliance(
+          simulatedHour === null ? undefined : { simulatedHour }
+        );
+        try {
+          await queueOfflineContactAttempt({
+            idempotency_key: idempotencyKey,
+            loan_id: loan.id,
+            channel: 'WHATSAPP',
+            attempted_at_device: new Date().toISOString(),
+            ist_time: compliance.currentTimeString,
+            status: compliance.isAllowed && !isProduction ? 'INITIATED' : 'BLOCKED',
+            details: isProduction
+              ? 'Production messaging is disabled until an approved template and sending integration are configured.'
+              : compliance.isAllowed ? undefined : compliance.reason,
+          });
+          onContactAttemptQueued();
+          if (isProduction) {
+            setContactError('WhatsApp is disabled in production until the approved template and sending integration are configured. The blocked attempt was saved for sync.');
+            return;
+          }
+          if (compliance.isAllowed) {
+            window.location.href = whatsappUrl;
+            return;
+          }
+          setContactError(`Blocked outside the RBI contact window (${compliance.currentTimeString}). The attempt was saved for sync.`);
+          return;
+        } catch (storageError) {
+          setContactError(storageError instanceof Error ? storageError.message : 'Unable to save the attempt offline.');
+          return;
+        }
+      }
+      setContactError(error instanceof Error ? error.message : 'Unable to record the message attempt.');
+    } finally {
+      setIsOpeningWhatsApp(false);
+    }
   };
 
   if (!loan) return null;
 
   const cleanPhone = loan.phone.replace(/[^\d]/g, '');
-  const messageToSend = encodeURIComponent(isSafe ? draft : sanitizedDraft);
+  const messageToSend = encodeURIComponent(approvedDraft);
   const whatsappUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${messageToSend}`;
 
   return (
@@ -224,15 +345,20 @@ export function AiReminderModal({
             </div>
           </div>
 
-          {/* WhatsApp Message Preview Bubble */}
+          {/* Approved message preview */}
           <div className="bg-[#e5ddd5] p-3 sm:p-4 rounded-xl border border-[#d1c7bc] space-y-2">
             <div className="flex items-center justify-between text-[11px] font-semibold text-slate-600">
               <span className="flex items-center gap-1">
                 <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
-                WhatsApp Preview
+              {isProduction ? 'Non-sendable reminder preview' : 'Approved template · WhatsApp preview'}
               </span>
               <span>To: {loan.phone}</span>
             </div>
+            {isProduction && (
+              <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs font-medium text-amber-950">
+                Production WhatsApp is disabled. This preview is not confirmed as the lender&apos;s registered DLT template and cannot be copied or sent.
+              </p>
+            )}
 
             {/* Bubble */}
             <div className="bg-white p-3 rounded-lg rounded-tl-none shadow-sm max-w-md text-xs sm:text-sm text-slate-800 leading-relaxed border border-slate-200">
@@ -242,19 +368,24 @@ export function AiReminderModal({
                   <span>Synthesizing compliant draft...</span>
                 </div>
               ) : (
-                <p className="whitespace-pre-wrap">
-                  {isSafe ? draft : sanitizedDraft}
-                </p>
+                <p className="whitespace-pre-wrap">{approvedDraft}</p>
               )}
               <div className="text-right text-[10px] text-slate-400 mt-1">14:30 &#10003;&#10003;</div>
             </div>
 
             {!isSafe && (
               <p className="text-[11px] text-amber-900 bg-amber-100 p-1.5 rounded font-medium">
-                * Note: Coercive terms were automatically stripped and sanitized in the preview above before sending.
+                The AI suggestion was flagged. Only the approved template shown above can be copied or opened in WhatsApp.
               </p>
             )}
           </div>
+
+          {draft && draft !== approvedDraft && (
+            <details className="rounded-xl border border-slate-200 bg-white p-3 text-xs">
+              <summary className="cursor-pointer font-semibold text-slate-700">Review AI suggestion (advisory; not sendable)</summary>
+              <p className="mt-2 whitespace-pre-wrap text-slate-600">{isSafe ? draft : sanitizedDraft}</p>
+            </details>
+          )}
 
           {/* Interactive Guardrail Stress Tester Sandbox */}
           <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
@@ -267,7 +398,7 @@ export function AiReminderModal({
             </div>
             
             <p className="text-[11px] text-slate-600">
-              Click any phrase below or type your own to watch the 2-layer guardrail block threats live:
+              These tests are isolated from the approved message and cannot be sent.
             </p>
 
             <div className="flex flex-wrap gap-1.5 text-xs">
@@ -334,6 +465,13 @@ export function AiReminderModal({
                 {isTestingCustom ? 'Testing...' : 'Audit Live'}
               </button>
             </div>
+            {customTestResult && (
+              <div className={`rounded-lg border p-2 text-[11px] ${customTestResult.safe ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-rose-200 bg-rose-50 text-rose-800'}`}>
+                <strong>{customTestResult.safe ? 'No prohibited terms found.' : 'Flagged test text; approved template is unchanged.'}</strong>
+                {!customTestResult.safe && <p className="mt-1 whitespace-pre-wrap">{customTestResult.sanitizedDraft}</p>}
+                {customTestResult.violations.length > 0 && <p className="mt-1">{customTestResult.violations.join(' · ')}</p>}
+              </div>
+            )}
           </div>
 
           {/* Action Buttons */}
@@ -341,22 +479,24 @@ export function AiReminderModal({
             <button
               type="button"
               onClick={handleCopy}
-              className="touch-target py-3 px-4 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 font-semibold text-xs sm:text-sm text-slate-800 flex items-center justify-center gap-2 transition"
+              disabled={isProduction}
+              className="touch-target py-3 px-4 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 font-semibold text-xs sm:text-sm text-slate-800 flex items-center justify-center gap-2 transition disabled:cursor-not-allowed disabled:opacity-50"
             >
               {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-slate-600" />}
               <span>{copied ? 'Copied!' : 'Copy Text'}</span>
             </button>
 
-            <a
-              href={whatsappUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="touch-target py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 transition"
+            <button
+              type="button"
+              onClick={handleOpenWhatsApp}
+              disabled={isLoading || isOpeningWhatsApp || !approvedDraft || !loan.phone.replace(/[^\d]/g, '')}
+              className="touch-target py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 transition disabled:opacity-50"
             >
               <Send className="w-4 h-4" />
-              <span>Open WhatsApp</span>
-            </a>
+              <span>{isOpeningWhatsApp ? 'Recording…' : isProduction ? 'Log blocked message attempt' : 'Review & open WhatsApp'}</span>
+            </button>
           </div>
+          {contactError && <p role="alert" className="rounded-lg bg-rose-50 border border-rose-200 p-2 text-xs text-rose-800">{contactError}</p>}
 
         </div>
 

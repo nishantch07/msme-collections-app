@@ -1,0 +1,158 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id               String       @id @default(cuid())
+  name             String
+  email            String       @unique
+  password_hash    String
+  role             String
+  assigned_pincode String
+  created_at       DateTime     @default(now())
+  updated_at       DateTime     @updatedAt
+  loans            Loan[]       @relation("AssignedOfficerLoans")
+  outcome_logs     OutcomeLog[]
+  contact_attempts ContactAttempt[]
+}
+
+model Branch {
+  id            String          @id @default(cuid())
+  branch_code   String          @unique
+  name          String
+  created_at    DateTime        @default(now())
+  updated_at    DateTime        @updatedAt
+  pincode_maps  BranchPincode[]
+  loans         Loan[]
+}
+
+model BranchPincode {
+  pincode    String   @id
+  branch_id  String
+  branch     Branch   @relation(fields: [branch_id], references: [id], onDelete: Cascade)
+  created_at DateTime @default(now())
+
+  @@index([branch_id])
+}
+
+model Loan {
+  id                     String         @id @default(cuid())
+  account_number         String         @unique
+  borrower_name          String
+  owner_name             String
+  phone                  String
+  business_type          String
+  outstanding_paise      Int
+  emi_amount_paise       Int
+  dpd                    Int
+  pincode                String
+  gps_lat                Float?
+  gps_lng                Float?
+  priority_score         Float
+  priority_breakdown     String
+  ai_confidence          String
+  ai_uncertainty_reason  String?
+  manual_override_score  Float?
+  manual_override_reason String?
+  assigned_officer_id    String?
+  assigned_officer       User?          @relation("AssignedOfficerLoans", fields: [assigned_officer_id], references: [id])
+  branch_id              String?
+  branch                 Branch?        @relation(fields: [branch_id], references: [id], onDelete: SetNull)
+  created_at             DateTime       @default(now())
+  updated_at             DateTime       @updatedAt
+  outcome_logs           OutcomeLog[]
+  promises_to_pay        PromiseToPay[]
+  contact_attempts       ContactAttempt[]
+  score_snapshots        LoanScoreSnapshot[]
+
+  @@index([assigned_officer_id, priority_score])
+  @@index([pincode, dpd])
+}
+
+model OutcomeLog {
+  id                     String   @id @default(cuid())
+  idempotency_key        String   @unique
+  payload_hash           String?
+  loan_id                String
+  loan                   Loan     @relation(fields: [loan_id], references: [id], onDelete: Cascade)
+  officer_id             String
+  officer                User     @relation(fields: [officer_id], references: [id])
+  outcome_type           String
+  amount_collected_paise Int?
+  notes                  String
+  gps_lat                Float
+  gps_lng                Float
+  gps_accuracy_m         Float
+  captured_at_device     DateTime
+  synced_at_server       DateTime @default(now())
+
+  @@index([loan_id, captured_at_device])
+}
+
+model PromiseToPay {
+  id                    String   @id @default(cuid())
+  loan_id               String
+  loan                  Loan     @relation(fields: [loan_id], references: [id], onDelete: Cascade)
+  promised_amount_paise Int
+  promise_date          DateTime
+  status                String
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  @@index([status, promise_date])
+}
+
+model ContactAttempt {
+  id             String   @id @default(cuid())
+  idempotency_key String  @unique
+  loan_id        String
+  loan           Loan     @relation(fields: [loan_id], references: [id], onDelete: Cascade)
+  officer_id     String
+  officer        User     @relation(fields: [officer_id], references: [id])
+  channel        String
+  status         String
+  attempted_at   DateTime @default(now())
+  ist_time       String
+  gps_lat        Float?
+  gps_lng        Float?
+  details        String?
+
+  @@index([attempted_at])
+}
+
+model ImportBatch {
+  id            String   @id @default(cuid())
+  filename      String
+  imported_by   String
+  imported_at   DateTime @default(now())
+  rows_received Int
+  rows_created  Int
+  rows_updated  Int
+  rows_rejected Int
+  snapshots     LoanScoreSnapshot[]
+}
+
+model LoanScoreSnapshot {
+  id               String      @id @default(cuid())
+  loan_id          String
+  loan             Loan        @relation(fields: [loan_id], references: [id], onDelete: Cascade)
+  import_batch_id  String
+  import_batch     ImportBatch @relation(fields: [import_batch_id], references: [id], onDelete: Cascade)
+  pincode          String
+  branch_code      String?
+  branch_name      String?
+  dpd              Int
+  outstanding_paise Int
+  priority_score   Float
+  captured_at      DateTime    @default(now())
+
+  @@index([captured_at, pincode])
+  @@index([loan_id, captured_at])
+  @@index([import_batch_id])
+}

@@ -32,11 +32,11 @@ To ensure predictable behavior across intermittent field connectivity and regula
 
 | Layer | Technology | Engineering Rationale |
 | :--- | :--- | :--- |
-| **Framework** | Next.js 14+ (App Router) | Single unified codebase for React Server Components, server actions, and REST API handlers; fast initial server render with minimal JS overhead. |
+| **Framework** | Next.js 15.5 (App Router) | Single unified codebase for React Server Components and REST API handlers; patched stable release line with React 18 compatibility. |
 | **Language** | TypeScript 5 (Strict) | End-to-end type safety between Prisma database models, Zod API payloads, and React components. |
 | **Styling** | Tailwind CSS | Mobile-first utility styling engineered for high-contrast sunlight readability; enforcement of minimum $48\text{px}$ touch targets. |
-| **Database** | SQLite via Prisma ORM | Zero-config local evaluation (`file:./dev.db`) with zero external service dependencies; instant migration via `prisma db push`. |
-| **Client Storage** | IndexedDB via `idb` | Structured transactional client-side storage for queuing offline outcome logs when 4G network drops in field beats. |
+| **Database** | SQLite locally; Neon PostgreSQL for production | Local demo is zero-config. Production uses a separate PostgreSQL schema and versioned Prisma migrations; `db push` is not used for production. |
+| **Client Storage** | AES-GCM encrypted IndexedDB via `idb` and Web Crypto | Offline outcomes and contact attempts are encrypted with a password-derived key; the password and key are not persisted. |
 | **Unit Testing** | Vitest | High-speed, ESM-native unit testing verifying priority math, RBI compliance gates, guardrails, and idempotency logic in $<400\text{ms}$. |
 | **Document Export** | `docx` + Node.js | Programmatic compilation of Markdown technical design documents into Word `.docx` submission format. |
 
@@ -63,9 +63,9 @@ To ensure predictable behavior across intermittent field connectivity and regula
 | SERVER REST API ENGINE                                                  |
 |                                                                         |
 |  1. RBI Time Gate (08:00 - 19:00 IST Check)                             |
-|  2. Zod Schema Validation                                               |
+|  2. Zod Schema Validation and distributed Upstash rate limits           |
 |  3. Idempotency Check (idempotency_key lookup)                          |
-|  4. Persist to SQLite (dev.db via Prisma)                               |
+|  4. Persist via Prisma (SQLite demo / Neon PostgreSQL production)       |
 |  5. Priority Engine Score Recalculation                                 |
 +-------------------------------------------------------------------------+
 ```
@@ -77,7 +77,8 @@ To ensure predictable behavior across intermittent field connectivity and regula
 ### 3.1 Entity Relationship Diagram & Schema
 
 - **`User`**: `id`, `name`, `email` (Unique), `password_hash`, `role` (`OFFICER` | `MANAGER`), `assigned_pincode`, `created_at`, `updated_at`
-- **`Loan`**: `id`, `account_number` (Unique), `borrower_name`, `owner_name`, `phone`, `business_type`, `outstanding_paise`, `emi_amount_paise`, `dpd`, `pincode`, `gps_lat`, `gps_lng`, `priority_score`, `priority_breakdown`, `ai_confidence` (`HIGH` | `LOW_CONFIDENCE` | `DISPUTE_HOLD`), `ai_uncertainty_reason`, `manual_override_score`, `manual_override_reason`, `assigned_officer_id`
+- **`Branch` / `BranchPincode`**: Operations-provided branch codes/names and the authoritative pincode-to-branch mapping used by production imports and roll-rate snapshots.
+- **`Loan`**: `id`, `account_number` (Unique), `borrower_name`, `owner_name`, `phone`, `business_type`, `outstanding_paise`, `emi_amount_paise`, `dpd`, `pincode`, `branch_id`, `gps_lat`, `gps_lng`, `priority_score`, `priority_breakdown`, `ai_confidence` (`HIGH` | `LOW_CONFIDENCE` | `DISPUTE_HOLD`), `ai_uncertainty_reason`, `manual_override_score`, `manual_override_reason`, `assigned_officer_id`
 - **`OutcomeLog`**: `id`, `idempotency_key` (Unique), `loan_id`, `officer_id`, `outcome_type` (`PAID` | `PTP` | `UNREACHABLE` | `DISPUTE` | `REFUSED`), `amount_collected_paise`, `notes`, `gps_lat`, `gps_lng`, `gps_accuracy_m`, `captured_at_device`, `synced_at_server`
 - **`PromiseToPay`**: `id`, `loan_id`, `promised_amount_paise`, `promise_date`, `status` (`ACTIVE` | `BROKEN` | `FULFILLED`)
 
@@ -90,10 +91,10 @@ To ensure predictable behavior across intermittent field connectivity and regula
 
 #### Flow B: Offline Batch Sync
 1. Field Officer logs 3 visits while in basement godown with no signal.
-2. Visits are assigned unique client idempotency keys and queued in IndexedDB.
+2. Visits are assigned unique client idempotency keys and AES-GCM encrypted before being queued in IndexedDB.
 3. Upon returning to 4G coverage, officer taps "Flush Sync Queue" (or app detects online event).
 4. `POST /api/sync/batch` transmits all queued records in a single payload.
-5. Server deduplicates keys against SQLite: already-processed keys return duplicate receipts without re-applying ledger changes; new records are inserted and priority scores are recalculated.
+5. Server deduplicates keys in the active database: already-processed keys return duplicate receipts without re-applying ledger changes; new records are inserted and priority scores are recalculated.
 
 #### Flow C: Manager AI Uncertainty & Dispute Override
 1. Account flagged with `DISPUTE_HOLD` or `LOW_CONFIDENCE` appears on Manager Escalation Queue.
@@ -109,7 +110,7 @@ To ensure predictable behavior across intermittent field connectivity and regula
 
 The AI engine computes a deterministic composite Priority Score $S_i \in [0, 100]$:
 
-$$S_i = 0.40 \cdot \hat{D}_i + 0.30 \cdot \hat{V}_i + 0.30 \cdot \hat{B}_i$$
+$$S_i = 0.35 \cdot \hat{D}_i + 0.25 \cdot \hat{V}_i + 0.25 \cdot \hat{B}_i + 0.15 \cdot \hat{P}_i$$
 
 Where:
 - **Normalized Days Past Due ($\hat{D}_i$):**
@@ -121,6 +122,7 @@ Where:
 - **Broken Promise Ratio ($\hat{B}_i$):**
   $$\hat{B}_i = \min(100, (2 \times \text{Broken}_{<30d} + 1 \times \text{Broken}_{\ge 30d}) \times 25)$$
   Promises broken within the last 30 days receive double weight, penalizing repeated unfulfilled commitments.
+- **Recent Payment Behavior ($\hat{P}_i$):** Recent recorded collections over the last 30 days reduce the score relative to the EMI amount. Missing history is treated as neutral (50), not as a missed payment. This is an advisory heuristic, not a trained or validated probability of default.
 
 ### 4.2 When AI is Wrong or Unsure: Human-in-the-Loop Fallbacks
 
@@ -131,7 +133,7 @@ Per the core assessment criteria, the system recognizes its own limitations and 
 
 ### 4.3 2-Layer Communication Guardrails
 
-The reminder generator combines Google Gemini (with DLT-template instant fallback) with strict deterministic safety filters:
+The reminder flow may show a Gemini suggestion in non-production demo environments and always exposes a deterministic, parameterized locally approved template as the only copyable/sendable content. Production does not send borrower data to Gemini until processor and privacy approvals are in place. The current text has no registered DLT template ID; the lender must approve/register the exact content before live messaging. The template is passed through deterministic safety filters:
 - **Layer 1 (Coercive Lexicon Filter):** Blocks intimidating vocabulary (`police`, `jail`, `seize`, `auction`, `warrant`, `defaulter`, `गिरफ्तार`, `जब्त`, `पुलिस`). Prohibited terms are automatically stripped and replaced with compliant neutral phrases.
 - **Layer 2 (Hallucinated Amount Check):** Extracts all currency numbers and verifies them against the verified ledger EMI or outstanding exposure. Unmatched figures are rejected and sanitized.
 
@@ -149,9 +151,11 @@ The reminder generator combines Google Gemini (with DLT-template instant fallbac
 ## 6. Honest Limits, Scope Cuts & V2 Roadmap
 
 ### 6.1 Intentional 7-Day Scope Cuts
-- **Direct WhatsApp BSP (Business Solution Provider) Integration:** Live WhatsApp Business API requires Meta enterprise verification and per-template credit card billing. Replaced with pre-filled WhatsApp deep-links (`https://wa.me/?text=...`) which work directly on officer mobile devices without third-party telecom costs.
+- **Direct WhatsApp BSP (Business Solution Provider) Integration:** The local demo uses a pre-filled WhatsApp deep-link after officer confirmation. Production WhatsApp is deliberately blocked until the lender supplies the exact approved DLT template and a provider-backed sending integration is implemented.
 - **Dynamic BharatQR Payment Webhook:** Live UPI dynamic QR generation requires NPCI merchant KYC registration. Replaced with structured cash and UPI collection recording with paper receipt tracking.
 
-### 6.2 Production V2 Roadmap
-- **DPDP Act 2023 Compliance:** Encrypt IndexedDB offline caches at rest using WebCrypto AES-GCM 256-bit keys derived from biometric device auth.
+### 6.2 Production Readiness Gaps
+- **DPDP Act 2023:** Offline queue records are encrypted with AES-GCM using a PBKDF2-derived key, but this does not replace managed-device encryption, remote wipe, device identity, or key recovery. Retention/deletion, approved notices and rights workflows, DPIA, breach response, and processor agreements still need counsel/privacy/security approval.
+- **Operations:** Branch master CSV import and branch-based snapshots are implemented; Company A must provide and validate the actual branch-to-pincode data. The back-test is descriptive and needs matured imported cohorts; schedule and monitor it weekly after rollout approval.
+- **Production deployment:** Neon PostgreSQL migrations, Render commands, Upstash rate limiting, health/readiness endpoints, and fail-closed missing-Redis behavior are included. Backup/restore drills, monitoring/alerting, incident response, audit-integrity review, and supported-device testing remain release gates. `/api/readiness` reports these unresolved controls rather than certifying readiness.
 - **OSRM Traveling Salesperson Routing:** Integrate open-source routing to calculate optimal multi-stop motorcycle routes minimizing Bengaluru traffic congestion across Peenya and Yeshwanthpur beats.

@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { X, CheckCircle, Navigation, ShieldAlert, AlertTriangle, IndianRupee, Calendar, FileText } from 'lucide-react';
 import { queueOfflineOutcome } from '@/lib/offline-db';
+import { checkRbiCompliance } from '@/lib/compliance';
 
 export interface LoanRecord {
   id: string;
@@ -15,14 +16,20 @@ export interface LoanRecord {
   emi_amount_paise: number;
   dpd: number;
   pincode: string;
-  gps_lat: number;
-  gps_lng: number;
+  gps_lat: number | null;
+  gps_lng: number | null;
   priority_score: number;
   priority_breakdown: string;
   ai_confidence: 'HIGH' | 'LOW_CONFIDENCE' | 'DISPUTE_HOLD';
   ai_uncertainty_reason: string | null;
   manual_override_score: number | null;
   manual_override_reason: string | null;
+  promises_to_pay?: Array<{
+    id: string;
+    promised_amount_paise: number;
+    promise_date: string;
+    status: string;
+  }>;
 }
 
 interface VisitDrawerProps {
@@ -44,7 +51,9 @@ export function VisitDrawer({
   onOutcomeLogged,
   language,
 }: VisitDrawerProps) {
-  const isNightLocked = simulatedHour !== null && (simulatedHour >= 19 || simulatedHour < 8);
+  const isNightLocked = simulatedHour === null
+    ? !checkRbiCompliance().isAllowed
+    : simulatedHour >= 19 || simulatedHour < 8;
 
   const [selectedOutcome, setSelectedOutcome] = useState<OutcomeType>('PAID');
   const [amountCollectedRupees, setAmountCollectedRupees] = useState<string>(
@@ -61,13 +70,42 @@ export function VisitDrawer({
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [gpsPosition, setGpsPosition] = useState<{ latitude: number; longitude: number; accuracy: number } | null>(null);
+  const [gpsError, setGpsError] = useState<string | null>(null);
+  const [isCapturingGps, setIsCapturingGps] = useState(false);
+
+  const captureGps = useCallback(() => {
+    if (!loan) return;
+    if (!navigator.geolocation) {
+      setGpsError('This device/browser does not provide GPS location.');
+      return;
+    }
+    setGpsPosition(null);
+    setIsCapturingGps(true);
+    setGpsError(null);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setGpsPosition({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        });
+        setIsCapturingGps(false);
+      },
+      (error) => {
+        setGpsError(error.message || 'Location permission or GPS signal is unavailable.');
+        setGpsPosition(null);
+        setIsCapturingGps(false);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
+    );
+  }, [loan]);
+
+  useEffect(() => {
+    if (loan) captureGps();
+  }, [loan, captureGps]);
 
   if (!loan) return null;
-
-  // Auto-captured GPS (simulated realistic field coordinates with minor jitter)
-  const gpsLat = 13.0285 + (Math.random() - 0.5) * 0.002;
-  const gpsLng = 77.5197 + (Math.random() - 0.5) * 0.002;
-  const gpsAccuracy = 12.0;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,6 +114,10 @@ export function VisitDrawer({
     // If RBI Night Lock is active, show explicit blocker
     if (isNightLocked) {
       setErrorMsg('RBI Fair Practices Lockout: Contact and visit logging are strictly prohibited between 19:00 and 08:00 IST.');
+      return;
+    }
+    if (!gpsPosition) {
+      setErrorMsg('Capture your location before saving this field visit.');
       return;
     }
 
@@ -93,10 +135,10 @@ export function VisitDrawer({
       promised_amount_paise:
         selectedOutcome === 'PTP' ? Math.round(parseFloat(promisedAmountRupees || '0') * 100) : null,
       promise_date: selectedOutcome === 'PTP' ? promiseDate : null,
-      notes: notes || `Field visit recorded for ${loan.borrower_name}`,
-      gps_lat: parseFloat(gpsLat.toFixed(5)),
-      gps_lng: parseFloat(gpsLng.toFixed(5)),
-      gps_accuracy_m: gpsAccuracy,
+      notes: notes || 'Field visit recorded.',
+      gps_lat: gpsPosition.latitude,
+      gps_lng: gpsPosition.longitude,
+      gps_accuracy_m: gpsPosition.accuracy,
       captured_at_device: capturedAt,
     };
 
@@ -105,7 +147,6 @@ export function VisitDrawer({
       try {
         await queueOfflineOutcome({
           ...payload,
-          borrower_name: loan.borrower_name,
         });
         setIsSubmitting(false);
         onOutcomeLogged(undefined, payload);
@@ -141,9 +182,22 @@ export function VisitDrawer({
       onOutcomeLogged(data.loan, data.outcomeLog);
       onClose();
     } catch (err: unknown) {
+      if (err instanceof TypeError || err instanceof SyntaxError) {
+        try {
+          await queueOfflineOutcome(payload);
+          setIsSubmitting(false);
+          onOutcomeLogged(undefined, payload);
+          onClose();
+          return;
+        } catch (storageError: unknown) {
+          const message = storageError instanceof Error ? storageError.message : 'Offline storage error';
+          setErrorMsg(`Network unavailable and offline save failed: ${message}`);
+        }
+      } else {
+        const message = err instanceof Error ? err.message : 'Error communicating with server.';
+        setErrorMsg(message);
+      }
       setIsSubmitting(false);
-      const msg = err instanceof Error ? err.message : 'Error communicating with server.';
-      setErrorMsg(msg);
     }
   };
 
@@ -327,20 +381,23 @@ export function VisitDrawer({
             </div>
           )}
 
-          {/* TAP 2: Auto-captured GPS & Device Timestamp */}
+          {/* TAP 2: Capture actual device GPS */}
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5 text-xs text-slate-600">
             <div className="flex items-center justify-between font-bold text-slate-800">
               <span className="flex items-center gap-1">
                 <Navigation className="w-3.5 h-3.5 text-blue-600" />
-                Step 2: Auto-Captured Geotag
+                Step 2: Device GPS location
               </span>
-              <span className="text-[11px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                &plusmn;12m Accuracy
-              </span>
+              {gpsPosition && <span className="text-[11px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                ±{Math.round(gpsPosition.accuracy)}m accuracy
+              </span>}
             </div>
-            <p className="font-mono text-[11px] text-slate-700">
-              {gpsLat.toFixed(5)}&deg; N, {gpsLng.toFixed(5)}&deg; E (Bengaluru Beat)
-            </p>
+            {gpsPosition
+              ? <p className="font-mono text-[11px] text-slate-700">{gpsPosition.latitude.toFixed(5)}, {gpsPosition.longitude.toFixed(5)}</p>
+              : <p className="text-[11px] text-slate-600">{isCapturingGps ? 'Waiting for GPS signal…' : gpsError || 'Location required to save this visit.'}</p>}
+            <button type="button" onClick={captureGps} disabled={isCapturingGps} className="touch-target rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 disabled:opacity-50">
+              {isCapturingGps ? 'Locating…' : gpsPosition ? 'Refresh location' : 'Retry location'}
+            </button>
           </div>
 
           {/* Field Notes Input */}
@@ -362,7 +419,7 @@ export function VisitDrawer({
           <div className="pt-2">
             <button
               type="submit"
-              disabled={isSubmitting || isNightLocked}
+              disabled={isSubmitting || isNightLocked || !gpsPosition}
               className={`touch-target w-full py-3.5 rounded-xl font-bold text-sm sm:text-base flex items-center justify-center gap-2 shadow-lg transition ${
                 isNightLocked
                   ? 'bg-slate-300 text-slate-500 cursor-not-allowed'

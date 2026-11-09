@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromHeadersOrCookies } from '@/lib/auth';
+import { enforceRateLimit } from '@/lib/rate-limit';
+import { requireProductionDataUseApproval } from '@/lib/production-readiness';
 
 const OverrideSchema = z.object({
   manual_override_score: z.number().min(0).max(100),
@@ -11,11 +13,21 @@ const OverrideSchema = z.object({
 
 export async function POST(
   req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const loanId = params.id;
+    const { id: loanId } = await params;
     const session = await getCurrentUserFromHeadersOrCookies(req);
+    if (process.env.NODE_ENV === 'production' && !session) {
+      return NextResponse.json({ error: 'Authentication required.' }, { status: 401 });
+    }
+    if (session && session.role !== 'MANAGER') {
+      return NextResponse.json({ error: 'Manager role required to override AI priority.' }, { status: 403 });
+    }
+    const rateLimitResponse = await enforceRateLimit(req, 'write');
+    if (rateLimitResponse) return rateLimitResponse;
+    const releaseGateResponse = await requireProductionDataUseApproval();
+    if (releaseGateResponse) return releaseGateResponse;
 
     const body = await req.json();
     const parseResult = OverrideSchema.safeParse(body);

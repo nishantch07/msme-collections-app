@@ -1,3 +1,5 @@
+import { getIstStartOfToday } from './date';
+
 export interface LoanPriorityInput {
   dpd: number;
   outstanding_paise: number;
@@ -28,7 +30,7 @@ export interface PriorityCalculationResult {
 
 /**
  * Deterministic AI Prioritisation Engine for MSME Field Collections
- * Formula: S_i = 0.40 * D_hat + 0.30 * V_hat + 0.30 * B_hat
+ * Formula: S_i = 0.35 * D_hat + 0.25 * V_hat + 0.25 * B_hat + 0.15 * P_hat
  */
 export function calculatePriorityScore(input: LoanPriorityInput): PriorityCalculationResult {
   const { dpd, outstanding_paise, promises = [], recentOutcomes = [], hasUnresolvedDispute = false } = input;
@@ -47,15 +49,19 @@ export function calculatePriorityScore(input: LoanPriorityInput): PriorityCalcul
   // 3. B_hat: Broken PTP weight with 2x penalty for broken promises in the last 30 days [0 - 100]
   const now = Date.now();
   const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  const todayIstStart = getIstStartOfToday(new Date(now)).getTime();
 
   let weightedBrokenCount = 0;
   let totalBroken = 0;
 
   for (const p of promises) {
-    if (p.status === 'BROKEN') {
+    const pDate = new Date(p.promise_date).getTime();
+    const isOverdueActivePromise = p.status === 'ACTIVE'
+      && Number.isFinite(pDate)
+      && pDate < todayIstStart;
+    if (p.status === 'BROKEN' || isOverdueActivePromise) {
       totalBroken++;
-      const pDate = new Date(p.promise_date).getTime();
-      const isWithin30Days = now - pDate <= thirtyDaysMs;
+      const isWithin30Days = pDate <= now && now - pDate <= thirtyDaysMs;
       weightedBrokenCount += isWithin30Days ? 2.0 : 1.0;
     }
   }
@@ -63,22 +69,35 @@ export function calculatePriorityScore(input: LoanPriorityInput): PriorityCalcul
   // Cap broken score at 100 (4 weighted breaks = 100 pts)
   const bHat = Math.min(100, weightedBrokenCount * 25);
 
-  // 4. Composite Score: S_i = 0.40 * D_hat + 0.30 * V_hat + 0.30 * B_hat
-  const rawScore = 0.40 * dHat + 0.30 * vHat + 0.30 * bHat;
+  // 4. Recent payment behavior: observed collections reduce priority; no history is neutral.
+  const recentOutcomes30d = recentOutcomes.filter((outcome) => {
+    const capturedAt = new Date(outcome.captured_at_device).getTime();
+    return capturedAt >= now - thirtyDaysMs && capturedAt <= now;
+  });
+  const recentPaidPaise = recentOutcomes30d
+    .filter((outcome) => outcome.outcome_type === 'PAID')
+    .reduce((sum, outcome) => sum + (outcome.amount_collected_paise || 0), 0);
+  const paymentHat = recentOutcomes30d.length === 0
+    ? 50
+    : Math.max(0, 100 - Math.min(100, (recentPaidPaise / Math.max(input.emi_amount_paise, 1)) * 100));
+
+  // 5. Composite advisory score with recent payment history included.
+  const rawScore = 0.35 * dHat + 0.25 * vHat + 0.25 * bHat + 0.15 * paymentHat;
   const priorityScore = Math.round(rawScore * 10) / 10;
 
   // 5. Explainability Badges (top 3 human-readable score drivers)
-  const dpdPts = (0.40 * dHat).toFixed(1);
-  const vPts = (0.30 * vHat).toFixed(1);
-  const bPts = (0.30 * bHat).toFixed(1);
+  const dpdPts = (0.35 * dHat).toFixed(1);
+  const vPts = (0.25 * vHat).toFixed(1);
+  const bPts = (0.25 * bHat).toFixed(1);
+  const pPts = (0.15 * paymentHat).toFixed(1);
 
   const exposureLakhs = (outstanding_paise / 10000000).toFixed(2);
 
   const topBadges = [
     `${dpd} DPD (+${dpdPts} pts)`,
     totalBroken > 0 
-      ? `${totalBroken} Broken PTP${totalBroken > 1 ? 's' : ''} (+${bPts} pts)`
-      : `0 Broken PTPs (+${bPts} pts)`,
+      ? `${totalBroken} Broken PTP${totalBroken > 1 ? 's' : ''} (+${bPts} pts) · payment trend (+${pPts} pts)`
+      : `0 Broken PTPs (+${bPts} pts) · payment trend (+${pPts} pts)`,
     `₹${exposureLakhs}L Exposure (+${vPts} pts)`,
   ];
 
