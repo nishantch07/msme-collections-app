@@ -5,7 +5,6 @@ import {
   Search,
   Phone,
   MessageSquareText,
-  SlidersHorizontal,
   ChevronDown,
   ChevronUp,
   AlertTriangle,
@@ -23,7 +22,7 @@ interface FieldOfficerQueueProps {
   language: 'en' | 'hi';
   onRefreshLoans: () => void;
   onUpdateLoanLocally: (loan: LoanRecord) => void;
-  onQueueOfflineOutcome: (offlineItem: any) => void;
+  onQueueOfflineOutcome: (offlineItem: { outcome_type: string; loan_id: string; amount_collected_paise?: number | null }) => void;
   officerName: string;
 }
 
@@ -93,7 +92,7 @@ export function FieldOfficerQueue({
 
   const handleCallBorrower = (phone: string, borrowerName: string) => {
     if (isNightLocked) {
-      alert(`⚠️ RBI Contact Lockout Active: Outbound calls are legally restricted between 19:00 and 08:00 IST.`);
+      alert(`⚠️ RBI Contact Lockout Active: Outbound calls to ${borrowerName} are legally restricted between 19:00 and 08:00 IST.`);
       return;
     }
     window.location.href = `tel:${phone}`;
@@ -181,7 +180,7 @@ export function FieldOfficerQueue({
           ].map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
+              onClick={() => setActiveTab(tab.id as 'ALL' | 'HIGH_PRIORITY' | 'UNSURE')}
               className={`touch-target px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
                 activeTab === tab.id
                   ? 'bg-slate-900 text-white shadow-sm'

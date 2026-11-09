@@ -102,12 +102,13 @@ export async function flushOfflineQueue(simulatedHour?: number | null): Promise<
       duplicateCount: result.duplicateCount || 0,
       totalFlushed: pending.length,
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Network sync error';
     return {
       syncedCount: 0,
       duplicateCount: 0,
       totalFlushed: 0,
-      error: error.message || 'Network sync error',
+      error: message,
     };
   }
 }

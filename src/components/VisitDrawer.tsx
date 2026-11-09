@@ -30,7 +30,7 @@ interface VisitDrawerProps {
   onClose: () => void;
   isOnline: boolean;
   simulatedHour: number | null;
-  onOutcomeLogged: (updatedLoan?: any, offlineItem?: any) => void;
+  onOutcomeLogged: (updatedLoan?: LoanRecord, offlineItem?: { outcome_type: string; loan_id: string; amount_collected_paise?: number | null }) => void;
   language: 'en' | 'hi';
 }
 
@@ -44,16 +44,14 @@ export function VisitDrawer({
   onOutcomeLogged,
   language,
 }: VisitDrawerProps) {
-  if (!loan) return null;
-
   const isNightLocked = simulatedHour !== null && (simulatedHour >= 19 || simulatedHour < 8);
 
   const [selectedOutcome, setSelectedOutcome] = useState<OutcomeType>('PAID');
   const [amountCollectedRupees, setAmountCollectedRupees] = useState<string>(
-    Math.round(loan.emi_amount_paise / 100).toString()
+    loan ? Math.round(loan.emi_amount_paise / 100).toString() : '0'
   );
   const [promisedAmountRupees, setPromisedAmountRupees] = useState<string>(
-    Math.round(loan.emi_amount_paise / 100).toString()
+    loan ? Math.round(loan.emi_amount_paise / 100).toString() : '0'
   );
   const [promiseDate, setPromiseDate] = useState<string>(() => {
     const d = new Date();
@@ -63,6 +61,8 @@ export function VisitDrawer({
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  if (!loan) return null;
 
   // Auto-captured GPS (simulated realistic field coordinates with minor jitter)
   const gpsLat = 13.0285 + (Math.random() - 0.5) * 0.002;
@@ -110,9 +110,10 @@ export function VisitDrawer({
         setIsSubmitting(false);
         onOutcomeLogged(undefined, payload);
         onClose();
-      } catch (err: any) {
+      } catch (err: unknown) {
         setIsSubmitting(false);
-        setErrorMsg('Failed to store outcome in offline IndexedDB: ' + (err.message || ''));
+        const msg = err instanceof Error ? err.message : 'Storage error';
+        setErrorMsg('Failed to store outcome in offline IndexedDB: ' + msg);
       }
       return;
     }
@@ -139,9 +140,10 @@ export function VisitDrawer({
       setIsSubmitting(false);
       onOutcomeLogged(data.loan, data.outcomeLog);
       onClose();
-    } catch (err: any) {
+    } catch (err: unknown) {
       setIsSubmitting(false);
-      setErrorMsg(err.message || 'Error communicating with server.');
+      const msg = err instanceof Error ? err.message : 'Error communicating with server.';
+      setErrorMsg(msg);
     }
   };
 

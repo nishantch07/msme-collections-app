@@ -154,8 +154,9 @@ export default function HomePage() {
       await updatePendingCount();
       await fetchLoans();
       alert(`✅ Batch Sync Complete: ${result.syncedCount} records synced, ${result.duplicateCount} duplicate idempotency receipts verified.`);
-    } catch (err: any) {
-      alert(`Sync failed: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Sync failed';
+      alert(`Sync failed: ${msg}`);
     } finally {
       setIsFlushing(false);
     }
@@ -169,14 +170,15 @@ export default function HomePage() {
   };
 
   // Local optimistic handler when an outcome is queued in offline mode
-  const handleQueueOfflineOutcome = (offlineItem: any) => {
+  const handleQueueOfflineOutcome = (offlineItem: { outcome_type: string; loan_id: string; amount_collected_paise?: number | null }) => {
     updatePendingCount();
     // Optimistically update loan if payment was made
     if (offlineItem.outcome_type === 'PAID' && offlineItem.amount_collected_paise) {
       setLoans((prev) =>
         prev.map((l) => {
           if (l.id === offlineItem.loan_id) {
-            const newOutstanding = Math.max(0, l.outstanding_paise - offlineItem.amount_collected_paise);
+            const collected = offlineItem.amount_collected_paise || 0;
+            const newOutstanding = Math.max(0, l.outstanding_paise - collected);
             return {
               ...l,
               outstanding_paise: newOutstanding,

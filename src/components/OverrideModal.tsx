@@ -7,7 +7,7 @@ import { LoanRecord } from './VisitDrawer';
 interface OverrideModalProps {
   loan: LoanRecord | null;
   onClose: () => void;
-  onOverrideSaved: (updatedLoan: any) => void;
+  onOverrideSaved: (updatedLoan: LoanRecord) => void;
   userRole: 'OFFICER' | 'MANAGER';
 }
 
@@ -17,17 +17,17 @@ export function OverrideModal({
   onOverrideSaved,
   userRole,
 }: OverrideModalProps) {
-  if (!loan) return null;
-
   const [overrideScore, setOverrideScore] = useState<number>(
-    loan.manual_override_score !== null && loan.manual_override_score !== undefined
+    loan?.manual_override_score !== null && loan?.manual_override_score !== undefined
       ? loan.manual_override_score
-      : Math.round(loan.priority_score)
+      : Math.round(loan?.priority_score || 50)
   );
   const [reason, setReason] = useState<string>('');
   const [targetConfidence, setTargetConfidence] = useState<'HIGH' | 'LOW_CONFIDENCE' | 'DISPUTE_HOLD'>('HIGH');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  if (!loan) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,8 +57,9 @@ export function OverrideModal({
 
       onOverrideSaved(data.loan);
       onClose();
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Error saving override');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error saving override';
+      setErrorMsg(msg);
     } finally {
       setIsSubmitting(false);
     }

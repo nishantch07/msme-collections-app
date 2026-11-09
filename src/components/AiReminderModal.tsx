@@ -28,8 +28,6 @@ export function AiReminderModal({
   officerName = 'Ramesh Kumar',
   simulatedHour,
 }: AiReminderModalProps) {
-  if (!loan) return null;
-
   const [language, setLanguage] = useState<'en' | 'hi'>('en');
   const [draft, setDraft] = useState<string>('');
   const [sanitizedDraft, setSanitizedDraft] = useState<string>('');
@@ -45,6 +43,7 @@ export function AiReminderModal({
 
   // Fetch initial reminder
   const fetchReminder = useCallback(async (lang: 'en' | 'hi') => {
+    if (!loan) return;
     setIsLoading(true);
     try {
       const res = await fetch('/api/ai/reminder', {
@@ -78,11 +77,14 @@ export function AiReminderModal({
   }, [loan, officerName, simulatedHour]);
 
   useEffect(() => {
-    fetchReminder(language);
-  }, [fetchReminder, language]);
+    if (loan) {
+      fetchReminder(language);
+    }
+  }, [fetchReminder, language, loan]);
 
   // Test custom text against guardrail filter
   const testCustomGuardrail = async (textToTest: string) => {
+    if (!loan) return;
     setIsTestingCustom(true);
     try {
       const res = await fetch('/api/ai/reminder', {
@@ -118,6 +120,8 @@ export function AiReminderModal({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  if (!loan) return null;
 
   const cleanPhone = loan.phone.replace(/[^\d]/g, '');
   const messageToSend = encodeURIComponent(isSafe ? draft : sanitizedDraft);

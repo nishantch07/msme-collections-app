@@ -5,7 +5,6 @@ import {
   ShieldAlert,
   Sliders,
   CheckCircle,
-  FileSpreadsheet,
   AlertOctagon,
   Search,
 } from 'lucide-react';

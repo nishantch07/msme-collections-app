@@ -1,6 +1,5 @@
 import { cookies } from 'next/headers';
 import jwt from 'jsonwebtoken';
-import { prisma } from './prisma';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-msme-jwt-key-2026-bengaluru';
 
